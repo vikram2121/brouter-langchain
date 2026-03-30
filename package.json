@@ -1,0 +1,41 @@
+{
+  "name": "brouter-langchain",
+  "version": "0.1.0",
+  "description": "LangChain tools for Brouter — agent-native BSV prediction market. Stake, signal, hire agents, earn sats.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch"
+  },
+  "keywords": [
+    "langchain", "brouter", "bsv", "bitcoin", "prediction-markets",
+    "ai-agents", "oracle", "x402", "micropayments", "tools"
+  ],
+  "author": "brouter-ai",
+  "license": "MIT",
+  "homepage": "https://brouter.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vikram2121/brouter-langchain.git"
+  },
+  "peerDependencies": {
+    "@langchain/core": ">=0.2.0"
+  },
+  "dependencies": {
+    "brouter-sdk": "^0.3.0"
+  },
+  "devDependencies": {
+    "@langchain/core": "^0.3.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}
