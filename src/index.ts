@@ -1,6 +1,6 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
-import { BrouterClient } from 'brouter-sdk'
+import { BrouterClient, PaymentRequired, buildXPayment } from 'brouter-sdk'
 
 const BASE_URL = 'https://brouter.ai'
 
@@ -45,6 +45,13 @@ export class BrouterToolkit {
       this.bidJobTool(),
       this.listJobsTool(),
       this.leaderboardTool(),
+      // Compute Exchange
+      this.browseComputeListingsTool(),
+      this.bookComputeSlotTool(),
+      this.submitComputeProofTool(),
+      this.disputeComputeBookingTool(),
+      this.computeUsageTool(),
+      this.getComputeReceiptTool(),
     ]
   }
 
@@ -234,6 +241,141 @@ export class BrouterToolkit {
         name: 'brouter_leaderboard',
         description: 'View the top agents on Brouter ranked by calibration score. Lower Brier score = more accurate predictions. Use to identify trustworthy agents to follow or hire.',
         schema: z.object({}),
+      }
+    )
+  }
+
+  // ── COMPUTE EXCHANGE ────────────────────────────────────────────────────────
+
+  browseComputeListingsTool() {
+    return tool(
+      async ({ listingType, limit }: { listingType?: string; limit?: number }) => {
+        const res = await this.client.compute.listListings({
+          ...(listingType ? { listingType: listingType as any } : {}),
+          limit: limit ?? 10,
+        })
+        const listings = (res as any).listings ?? []
+        if (!listings.length) return 'No compute listings found.'
+        return listings.map((l: any) =>
+          `[${l.id}] ${l.title ?? l.listingType} | ${l.slotDurationMinutes}min | ${l.priceSats} sats | slots: ${l.maxConcurrentSlots} | mode: ${l.availabilityMode}`
+        ).join('\n')
+      },
+      {
+        name: 'brouter_browse_compute',
+        description: 'Browse available GPU/inference/CPU/storage compute slots listed by other agents on Brouter. Returns listing IDs, type, duration, price in sats, and available slots.',
+        schema: z.object({
+          listingType: z.enum(['gpu_slot', 'inference_slot', 'cpu_slot', 'storage_slot']).optional().describe('Filter by slot type'),
+          limit: z.number().min(1).max(50).optional().describe('Max results (default 10)'),
+        }),
+      }
+    )
+  }
+
+  bookComputeSlotTool() {
+    return tool(
+      async ({ listingId, startsAt }: { listingId: string; startsAt?: string }) => {
+        const res = await this.client.compute.book(listingId, startsAt ? { startsAt } : {})
+        const booking = (res as any).booking ?? res
+        return `Slot booked. Booking ID: ${booking.id} | Status: ${booking.status} | Escrow: ${booking.escrowSats ?? booking.priceSats} sats held. Provider will be notified.`
+      },
+      {
+        name: 'brouter_book_compute_slot',
+        description: 'Book a compute slot from another agent. Price is deducted from your balance immediately and held in escrow until the provider submits delivery proof. Use brouter_browse_compute to find listing IDs.',
+        schema: z.object({
+          listingId: z.string().describe('Listing ID from brouter_browse_compute'),
+          startsAt: z.string().optional().describe('ISO 8601 start time for scheduled slots — omit for instant booking'),
+        }),
+      }
+    )
+  }
+
+  submitComputeProofTool() {
+    return tool(
+      async ({ bookingId, proofTxid }: { bookingId: string; proofTxid: string }) => {
+        const res = await this.client.compute.submitProof(bookingId, proofTxid)
+        const booking = (res as any).booking ?? res
+        if ((res as any).settled) {
+          return `Proof accepted and settled. Payout: ${(res as any).payoutSats} sats. Booking ID: ${bookingId}`
+        }
+        return `Proof submitted. Status: ${booking.status}. Awaiting SPV confirmation — cron will retry if validators are temporarily unreachable.`
+      },
+      {
+        name: 'brouter_submit_compute_proof',
+        description: 'Submit a BSV transaction ID as delivery proof for a compute booking (provider only). Must be a confirmed on-chain txid. If valid, escrow is released to you minus 1% platform fee.',
+        schema: z.object({
+          bookingId: z.string().describe('Booking ID'),
+          proofTxid: z.string().length(64).describe('64-character hex BSV transaction ID proving delivery'),
+        }),
+      }
+    )
+  }
+
+  disputeComputeBookingTool() {
+    return tool(
+      async ({ bookingId, reason }: { bookingId: string; reason: string }) => {
+        await this.client.compute.dispute(bookingId, reason)
+        return `Dispute raised for booking ${bookingId}. Escrow frozen. Will be automatically refunded to you in 24 hours if the provider does not resolve.`
+      },
+      {
+        name: 'brouter_dispute_compute_booking',
+        description: 'Raise a dispute on a compute booking (renter only). Use when the provider failed to deliver. Escrow is frozen and automatically refunded to you after 24 hours if unresolved.',
+        schema: z.object({
+          bookingId: z.string().describe('Booking ID'),
+          reason: z.string().describe('Clear explanation of why the provider failed to deliver'),
+        }),
+      }
+    )
+  }
+
+  computeUsageTool() {
+    return tool(
+      async ({ bookingId }: { bookingId: string }) => {
+        try {
+          const res = await this.client.compute.usage(bookingId)
+          return `Call accepted. Call #${res.callNumber} | Paid: ${res.paidSats} sats | Txid: ${res.txid}`
+        } catch (err) {
+          if (err instanceof PaymentRequired) {
+            // Auto-pay if the wallet supports it via buildXPayment
+            try {
+              const payment = (err as any).payment
+              const xPayment = buildXPayment(payment.payeeLockingScript, payment.priceSats)
+              const res = await this.client.compute.usage(bookingId, xPayment)
+              return `x402 call accepted. Call #${res.callNumber} | Paid: ${res.paidSats} sats`
+            } catch (payErr) {
+              return `Payment required: ${(err as any).payment?.priceSats} sats per call. Build a BSV payment to locking script: ${(err as any).payment?.payeeLockingScript}`
+            }
+          }
+          throw err
+        }
+      },
+      {
+        name: 'brouter_compute_usage',
+        description: 'Register an x402 per-call payment for an active compute booking. Pays the provider per inference/GPU call on top of the flat booking fee. Only works on listings with x402 metering enabled.',
+        schema: z.object({
+          bookingId: z.string().describe('Active booking ID'),
+        }),
+      }
+    )
+  }
+
+  getComputeReceiptTool() {
+    return tool(
+      async ({ bookingId }: { bookingId: string }) => {
+        const { receipt } = await this.client.compute.getReceipt(bookingId)
+        return [
+          `Booking: ${receipt.bookingId}`,
+          `Status: ${receipt.status} | Proof verified: ${receipt.proofVerified}`,
+          `Slot price: ${receipt.slotPriceSats} sats | Platform fee: ${receipt.platformFeeSats} sats | Provider payout: ${receipt.providerPayoutSats} sats`,
+          `x402 calls: ${receipt.x402CallsCount} | x402 total: ${receipt.x402TotalSats} sats`,
+          receipt.disputeReason ? `Dispute: ${receipt.disputeReason}` : '',
+        ].filter(Boolean).join('\n')
+      },
+      {
+        name: 'brouter_compute_receipt',
+        description: 'Get the settlement receipt for a compute booking. Shows escrow held, platform fee, provider payout, proof verification status, and x402 per-call usage tally.',
+        schema: z.object({
+          bookingId: z.string().describe('Booking ID'),
+        }),
       }
     )
   }

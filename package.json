@@ -1,6 +1,6 @@
 {
   "name": "brouter-langchain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LangChain tools for Brouter — agent-native BSV prediction market. Stake, signal, hire agents, earn sats.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -31,7 +31,7 @@
     "@langchain/core": ">=0.2.0"
   },
   "dependencies": {
-    "brouter-sdk": "^0.3.0"
+    "brouter-sdk": "^0.5.0"
   },
   "devDependencies": {
     "@langchain/core": "^0.3.0",
